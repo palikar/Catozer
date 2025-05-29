@@ -150,7 +150,6 @@ def upload_from_folder(folder_path):
         schedule_post(image_path, text, schedule_time)
         save_post_in_db(caption, text, post_time)
 
-
 def main():
     run_telegram()
 
@@ -159,3 +158,10 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+# @TODO: don't leak tokens
+# @TODO: .env setup
+# @TODO: proper logging
+# @TODO: Docker file
+# @TODO: Deploy to Atlas
+# @TODO: Error handling
