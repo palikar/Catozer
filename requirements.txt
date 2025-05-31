@@ -5,3 +5,6 @@ google-genai
 moondream
 psycopg2-binary
 python-dotenv
+flask
+waitress
+apscheduler

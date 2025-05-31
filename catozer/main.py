@@ -2,6 +2,7 @@ import os
 import json
 import sys
 from datetime import datetime, timedelta, time
+import threading
 
 from PIL import Image
 
@@ -20,15 +21,25 @@ from dotenv import load_dotenv
 from imgurpython import ImgurClient
 
 import psycopg2
+from psycopg2.extras import RealDictCursor
+
+from flask import Flask, render_template, send_from_directory
+import waitress
+
+from apscheduler.schedulers.background import BackgroundScheduler
 
 load_dotenv()
 
+AVAILABLE_DAY_TIMES = [
+    10,
+    14,
+    18
+]
+
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-MOONDREAM_TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXlfaWQiO\
-iJkZjkzN2E3Ny1kM2ZlLTQ1YmMtYmE0Ny1iYjJiNTU4NmY1NWMiLCJvcmdfaWQiOiJoN\
-k5iTXJDbWxPdkE1UHB0OFdKelhsQlpRcndQSVdxMSIsImlhdCI6MTc0ODQyODQ0NSwidm\
-VyIjoxfQ.92LUkmifGQ5g1RPVpNaV9uSVMqseFg3Kehssg1TAolU"
+MOONDREAM_TOKEN=""
 
 FACEBOOK_TOKEN = os.getenv("FACEBOOK_TOKEN")
 IG_TOKEN = os.getenv("IG_TOKEN")
@@ -53,9 +64,10 @@ MoondreamModel = moondream.vl(api_key=MOONDREAM_TOKEN)
 GeminiClient = genai.Client(api_key=GEMINI_TOKEN)
 FacebookGraph = facebook.GraphAPI(access_token=FACEBOOK_TOKEN, version="3.1")
 IGGraph = facebook.GraphAPI(access_token=IG_TOKEN, version="3.1")
-
 Imgur = ImgurClient(IMGUR_CLIENT_ID, IMGUR_CLIENT_SECRET)
 Imgur.set_user_auth(IMGUR_ACCESS_TOKEN, IMGUR_REFRESH_TOKEN)
+
+ServerApp = Flask(__name__, static_url_path='', static_folder='../web/static', template_folder='../web/templates')
 
 DBConn = psycopg2.connect(
     dbname=DB_NAME,
@@ -84,37 +96,128 @@ def get_schedules():
 
     return posts
 
-def get_not_posted_but_schedules():
-    cur = DBConn.cursor()
-    cur.execute("SELECT id, text, image_name FROM posts WHERE scheduled = false AND schedule_time <= NOW();")
-    posts = cur.fetchall()
-    DBConn.commit()
-    cur.close()
+def get_all_posts():
+    with DBConn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT * FROM posts ORDER BY schedule_time DESC")
+        posts = cur.fetchall()
+        DBConn.commit()
 
     return posts
 
+def get_not_posted_but_scheduled():
+    with DBConn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT id, text, image_name, posted_on_fb, posted_on_ig FROM posts WHERE (posted_on_fb = false OR posted_on_ig = false) AND schedule_time <= NOW();")
+        posts = cur.fetchall()
+        DBConn.commit()
+
+    return posts
+
+
+def mark_as_fb_posted(post_id):
+    cur = DBConn.cursor()
+    cur.execute("UPDATE posts SET posted_on_fb = true WHERE id = %s", (post_id, ))
+    DBConn.commit()
+    cur.close()
+    return posts
+
+def mark_as_ig_posted(post_id):
+    cur = DBConn.cursor()
+    cur.execute("UPDATE posts SET posted_on_ig = true WHERE id = %s", (post_id, ))
+    DBConn.commit()
+    cur.close()
+    return posts
+
+
+def has_free_slot_in_day(now, now_str, schedules_map):
+    """
+    Checks whether there is a free posting slot on a given day.
+
+    Args:
+        now (datetime): Current datetime.
+        now_str (str): Date string in 'dd-mm-YYYY' format representing the day to check.
+        schedules_map (dict): A map from date strings to a list of scheduled datetimes.
+
+    Returns:
+        bool: True if there is at least one free and valid (i.e., future) slot on the day.
+    """
+    # If the day has no scheduled posts yet, there is a free slot.
+    if now_str not in schedules_map:
+        return True
+
+    # If scheduled posts exceed available slots, there is no room.
+    if len(schedules_map[now_str]) >= len(AVAILABLE_DAY_TIMES):
+        return False
+
+    # Get the list of taken slot hours for the day.
+    taken_slots = schedules_map[now_str]
+    taken_slots_hours = [int(slot.strftime("%H")) for slot in taken_slots]
+
+    # Check each available hour for a free slot that's also in the future.
+    for available_slot_time in AVAILABLE_DAY_TIMES:
+        candidate_time = datetime.combine(now.date(), time(hour=available_slot_time))
+        if candidate_time < datetime.now():
+            continue  # Skip past times
+        if available_slot_time not in taken_slots_hours:
+            return True  # Found a free slot
+
+    return False  # No free future slots found
+
+
+def get_free_slot(now, now_str, schedules_map):
+    """
+    Finds the next free time slot on a given day.
+
+    Args:
+        now (datetime): Base datetime (used for date).
+        now_str (str): Date string in 'dd-mm-YYYY' format representing the day to check.
+        schedules_map (dict): A map from date strings to a list of scheduled datetimes.
+
+    Returns:
+        datetime: The next available datetime slot for posting.
+    """
+    # If no posts are scheduled on that day, return the first available slot.
+    if now_str not in schedules_map:
+        return datetime.combine(now.date(), time(hour=AVAILABLE_DAY_TIMES[0]))
+
+    # Extract already taken hours on that day.
+    taken_slots = [int(slot.strftime("%H")) for slot in schedules_map[now_str]]
+
+    # Find the first available hour not already taken.
+    for available_slot_time in AVAILABLE_DAY_TIMES:
+        if available_slot_time not in taken_slots:
+            return datetime.combine(now.date(), time(hour=available_slot_time))
+
+    # In practice, this should not happen if used after has_free_slot_in_day
+    return None
+
+
 def find_scheduling_time():
+    """
+    Finds the next available datetime to schedule a post.
+
+    Returns:
+        datetime: A datetime object representing when the next post can be scheduled.
+    """
     now = datetime.now()
 
+    # Get all existing scheduled post times.
     schedules = get_schedules()
+
+    # Organize schedules by date string (e.g., '31-05-2025' -> [times])
     schedules_map = {}
     for sched in schedules:
         day = sched.strftime("%d-%m-%Y")
-        if day not in schedules_map.keys():
-            schedules_map[day] = []
-        schedules_map[day].append(sched)
+        schedules_map.setdefault(day, []).append(sched)
 
     now_str = now.strftime("%d-%m-%Y")
-    while now_str in schedules_map.keys() and len(schedules_map[now_str]) > 1:
+
+    # Advance day by day until we find a day with a free slot.
+    while not has_free_slot_in_day(now, now_str, schedules_map):
         now += timedelta(days=1)
         now_str = now.strftime("%d-%m-%Y")
 
-    if now_str in schedules_map.keys():
-        scedule = datetime.combine(now.date(), time(hour=18))
-    else:
-        scedule = datetime.combine(now.date(), time(hour=10))
-
-    return scedule
+    # Return the actual datetime slot available.
+    return get_free_slot(now, now_str, schedules_map)
 
 def generate_photo_caption(image_path):
     image = Image.open(image_path)
@@ -176,24 +279,34 @@ async def handle_telegram_photo(update: Update, context: ContextTypes.DEFAULT_TY
     await photo_file.download_to_drive(file_path)
     print(f"Photo from telegram downloaded to {file_path}")
 
-    caption = generate_photo_caption(file_path)
-    print(f"Caption for photo: {caption}")
-    await update.message.reply_text(f"🧠 Caption: {caption}")
+    post_text = None
+    caption = None
 
-    post_text = generate_post_content(caption)
-    print(f"Content for post: {post_text}")
-    await update.message.reply_text(f"👍 Post: {post_text}")
+    try:
+        caption = generate_photo_caption(file_path)
+        print(f"Caption for photo: {caption}")
+        await update.message.reply_text(f"🧠 Caption: {caption}")
+    except:
+        pass
+
+    try:
+        if caption is not None:
+            post_text = generate_post_content(caption)
+            print(f"Content for post: {post_text}")
+            await update.message.reply_text(f"👍 Post: {post_text}")
+    except:
+        pass
 
     post_time = find_scheduling_time()
     schedule_time = post_time.timestamp()
-
     print(f"Scheduling Post for '{str(post_time)}'")
 
     put_post_in_db(caption, post_text, post_time, image_name)
 
-    # schedule_fb_post(file_path, post_text, schedule_time)
-
-    await update.message.reply_text(f"✅ Done! FB/IG Post Scheduled for: {post_time}")
+    if post_text is not None and caption is not None:
+        await update.message.reply_text(f"✅ Done! FB/IG Post Scheduled for: {post_time}")
+    else:
+        await update.message.reply_text(f"❌ Something went wrong but will retry in some while.")
 
 def run_telegram():
     try:
@@ -229,24 +342,72 @@ def upload_from_folder(folder_path):
         put_post_in_db(caption, text, schedule_time, img)
 
 def post_pending():
-    posts = get_not_posted_but_schedules()
+    print('Polling..')
+
+    posts = get_not_posted_but_scheduled()
+
     if not posts:
         return
 
+    print("Pending posts: ", len(posts))
+
     for post in posts:
-        content = post[1]
-        image_url = os.path.join(DOWNLOAD_DIR, post[2])
+        text = post['text']
+        image_url = os.path.join(DOWNLOAD_DIR, post['image_name'])
+        post_id = post['id']
 
-        try:
-            post_on_fb(image_url, content)
-            post_on_ig(image_url, content)
-        except:
-            pass
+        if not post['posted_on_fb']:
+            try:
+                # post_on_fb(image_url, text)
+                print('Marking as posted on fb:', post_id)
+                mark_as_fb_posted(post_id)
+            except:
+                pass
 
+        if not post['posted_on_ig']:
+            try:
+                # post_on_ig(image_url, text)
+                print('Marking as posted on ig:', post_id)
+                mark_as_ig_posted(post_id)
+            except:
+                pass
+
+
+
+def run_server():
+    ServerApp.config['TEMPLATES_AUTO_RELOAD'] = True
+    ServerApp.run(host='0.0.0.0', port=1313)
+    # waitress.serve(ServerApp, host='0.0.0.0', port=1313)
+
+
+@ServerApp.route("/")
+def index():
+    posts = get_all_posts()
+    days = {}
+    for post in posts:
+        day = post['schedule_time'].strftime("%d-%m-%Y")
+        if day not in days.keys():
+            days[day] = {}
+            days[day]['posts'] = []
+        days[day]['posts'].append(post)
+
+    return render_template('index.html', days=days)
+
+@ServerApp.route("/images/<path:filename>")
+def images(filename):
+    return send_from_directory(ServerApp.root_path + '/../downloads/', filename)
 
 def main():
-    run_telegram()
 
+    print(find_scheduling_time())
+    return
+    threading.Thread(target=run_server, daemon=True).start()
+
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(post_pending, 'interval', seconds=1)
+    scheduler.start()
+
+    run_telegram()
 
 if __name__ == '__main__':
     main()
@@ -255,4 +416,3 @@ if __name__ == '__main__':
 # @TODO: Docker file
 # @TODO: Deploy to Atlas
 # @TODO: Error handling
-# @TODO: DB

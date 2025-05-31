@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+
+  <head>
+    <title>Catozer Posts </title>
+    <style>
+
+    </style>
+
+    <link rel="stylesheet" type="text/css" href="style.css">
+  </head>
+
+  <body class="bg-gray-100 min-h-screen flex items-center justify-center px-4">
+
+    <div class="w-full max-w-7xl space-y-4">
+
+      <!-- Example Post - Scheduled -->
+
+      {% for key, day in days.items() %}
+      <h2 class="text-lg font-bold">
+	{{key}}
+
+      </h2>
+      {% for post in day.posts %}
+      <div class=" {% if post.posted %} bg-green-200 border-green-700 {% else  %} bg-white {% endif %}  border outline-1 shadow-md rounded-lg flex flex-col md:flex-row justify-between p-4">
+
+	<div class="flex-1 flex flex-col justify-between w-xl">
+
+	  <div class="">
+	    <h3 class="max-w-md text-xl font-semibold text-gray-900 mb-1 truncate">{{post.caption}}</h3>
+	    <hr/>
+	  </div>
+	  <div class="flex-1 flex flex-col justify-between ">
+	    <div>
+	      <p class="text-gray-800 text-lg mb-2">
+		{{ post.text }}
+	      </p>
+	    </div>
+
+	    <div class="mt-4 flex items-center justify-between w-xl">
+	      <p class="text-sm text-gray-500">{{ post.schedule_time }}</p>
+	      <button class="bg-blue-600 text-white text-sm px-4 py-2 rounded hover:bg-blue-700 transition">
+		Post Now
+	      </button>
+	    </div>
+	  </div>
+	</div>
+
+	<div class="md:w-30 mt-4 md:mt-0 md:ml-4">
+	  <img src="/images/{{ post.image_name }}" alt="Post Image" class="w-full h-auto rounded-md object-cover">
+	</div>
+      </div>
+      {% endfor %}
+
+      <hr/>
+      {% endfor %}
+
+      <!-- Example Post - Already Posted -->
+
+    </div>
+  </body>
+</html>
