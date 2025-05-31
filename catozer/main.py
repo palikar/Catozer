@@ -1,6 +1,7 @@
 import os
 import json
 import sys
+import logging
 from datetime import datetime, timedelta, time
 import threading
 
@@ -32,14 +33,12 @@ load_dotenv()
 
 AVAILABLE_DAY_TIMES = [
     10,
-    14,
     18
 ]
 
-
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-MOONDREAM_TOKEN=""
+MOONDREAM_TOKEN=os.getenv("MOONDREAM_TOKEN")
 
 FACEBOOK_TOKEN = os.getenv("FACEBOOK_TOKEN")
 IG_TOKEN = os.getenv("IG_TOKEN")
@@ -57,6 +56,8 @@ DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASS = os.getenv("DB_PASS")
 DB_PORT = os.getenv("DB_PORT")
+
+CATOZER_DEBUG = os.getenv("CATOZER_DEBUG") == "1"
 
 DOWNLOAD_DIR = "downloads"
 
@@ -76,6 +77,20 @@ DBConn = psycopg2.connect(
     host=DB_HOST,
     port=DB_PORT
 )
+
+logging.basicConfig(
+    level=logging.DEBUG,
+
+    format='[%(asctime)s] %(levelname)s in %(name)s:%(lineno)d -- %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+
+    handlers=[
+        logging.FileHandler("app.log"),
+        logging.StreamHandler()
+    ]
+)
+
+Logger = logging.getLogger(__name__)
 
 def put_post_in_db(caption, text, schedule_time, image_name):
     cur = DBConn.cursor()
@@ -112,7 +127,6 @@ def get_not_posted_but_scheduled():
 
     return posts
 
-
 def mark_as_fb_posted(post_id):
     cur = DBConn.cursor()
     cur.execute("UPDATE posts SET posted_on_fb = true WHERE id = %s", (post_id, ))
@@ -126,7 +140,6 @@ def mark_as_ig_posted(post_id):
     DBConn.commit()
     cur.close()
     return posts
-
 
 def has_free_slot_in_day(now, now_str, schedules_map):
     """
@@ -162,7 +175,6 @@ def has_free_slot_in_day(now, now_str, schedules_map):
 
     return False  # No free future slots found
 
-
 def get_free_slot(now, now_str, schedules_map):
     """
     Finds the next free time slot on a given day.
@@ -189,7 +201,6 @@ def get_free_slot(now, now_str, schedules_map):
 
     # In practice, this should not happen if used after has_free_slot_in_day
     return None
-
 
 def find_scheduling_time():
     """
@@ -236,38 +247,61 @@ def generate_post_content(caption):
     return text
 
 def post_on_fb(image_url, content):
-    with open(image_url, 'rb') as image:
-        photo = FacebookGraph.put_photo(
-            image = image,
-            album_path = 'me/photos',
-            published = False,
-        )
-    media_fbid = photo['id']
-    print(f'Uploaded photo to Facebook - id: {media_fbid}')
+    try:
+        with open(image_url, 'rb') as image:
+            photo = FacebookGraph.put_photo(
+                image = image,
+                album_path = 'me/photos',
+                published = False,
+            )
 
-    post_data = {
-        'message': content,
-        'attached_media': str([{'media_fbid': media_fbid}]),
-    }
-    FacebookGraph.put_object(parent_object=PAGE_ID, connection_name='feed', **post_data)
+        media_fbid = photo['id']
+        Logger.info(f'Uploaded photo to Facebook - id: {media_fbid}')
+    except:
+        Logger.error(f'Could not upload photo to Facebook')
+
+    try:
+        post_data = {
+            'message': content,
+            'attached_media': str([{'media_fbid': media_fbid}]),
+        }
+        FacebookGraph.put_object(parent_object=PAGE_ID, connection_name='feed', **post_data)
+    except:
+        Logger.error(f'Could not publish post to Facebook')
 
 def post_on_ig(image_url, content):
-    result = Imgur.upload_from_path(image_url, config=None, anon=False)
-    link = result['link']
 
-    media = IGGraph.put_object(
-        parent_object=IG_ID,
-        connection_name='media',
-        image_url=link,
-        caption=content,
-    )
+    try:
+        result = Imgur.upload_from_path(image_url, config=None, anon=False)
+        link = result['link']
+        Logger.error(f'Uploaded image with link {link}')
+    except:
+        Logger.error('Could not upload image to Imgur')
+        return
 
-    creation_id = media['id']
-    result = IGGraph.put_object(
-        parent_object=IG_ID,
-        connection_name='media_publish',
-        creation_id=creation_id
-    )
+    try:
+        media = IGGraph.put_object(
+            parent_object=IG_ID,
+            connection_name='media',
+            image_url=link,
+            caption=content,
+        )
+    except:
+        Logger.error('Could not upload media to Instagram')
+        return
+
+    try:
+        creation_id = media['id']
+        Logger.error(f'Uploading creation id {creation_id}')
+        result = IGGraph.put_object(
+            parent_object=IG_ID,
+            connection_name='media_publish',
+            creation_id=creation_id
+        )
+    except:
+        Logger.error('Could not publish media to Instagram')
+        return
+
 
 async def handle_telegram_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -277,35 +311,40 @@ async def handle_telegram_photo(update: Update, context: ContextTypes.DEFAULT_TY
     image_name = f"{photo_file.file_id}.jpg"
     file_path = os.path.join(DOWNLOAD_DIR, f"{image_name}")
     await photo_file.download_to_drive(file_path)
-    print(f"Photo from telegram downloaded to {file_path}")
+    Logger.info(f"Photo from telegram downloaded to {file_path}")
 
     post_text = None
     caption = None
 
     try:
         caption = generate_photo_caption(file_path)
-        print(f"Caption for photo: {caption}")
+        Logger.info(f"Caption for photo: {caption}")
         await update.message.reply_text(f"🧠 Caption: {caption}")
     except:
-        pass
+        Logger.error('Could generate post caption with Moondream')
 
     try:
         if caption is not None:
             post_text = generate_post_content(caption)
-            print(f"Content for post: {post_text}")
+            Logger.info(f"Content for post: {post_text}")
             await update.message.reply_text(f"👍 Post: {post_text}")
     except:
-        pass
+        Logger.error('Could generate post content with Gemini')
 
     post_time = find_scheduling_time()
     schedule_time = post_time.timestamp()
-    print(f"Scheduling Post for '{str(post_time)}'")
+    Logger.info(f"Scheduling Post for '{str(post_time)}'")
 
-    put_post_in_db(caption, post_text, post_time, image_name)
+    try:
+        put_post_in_db(caption, post_text, post_time, image_name)
+    except:
+        Logger.error('Could save post to DB')
 
     if post_text is not None and caption is not None:
+        Logger.info(f'FB/IG Post Scheduled for: {post_time}')
         await update.message.reply_text(f"✅ Done! FB/IG Post Scheduled for: {post_time}")
     else:
+        Logger.info(f'Something went wrong but the post should be in the DB')
         await update.message.reply_text(f"❌ Something went wrong but will retry in some while.")
 
 def run_telegram():
@@ -317,39 +356,19 @@ def run_telegram():
     telegram_app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     telegram_app.add_handler(MessageHandler(filters.PHOTO, handle_telegram_photo))
 
-    print('Starting Telegram Bot...')
+    Logger.info('Starting Telegram Bot...')
     telegram_app.run_polling()
 
-def upload_from_folder(folder_path):
-    jpg_files = [f for f in os.listdir(folder_path) if f.lower().endswith('.jpg')]
-    for img in jpg_files:
-        base_name = os.path.splitext(img)[0]
-        image_path = os.path.join(folder_path, img)
-
-        text_path = os.path.join(folder_path, base_name + "_post.txt")
-        caption_path = os.path.join(folder_path, base_name + ".txt")
-
-        with open(text_path, "r", encoding="utf-8") as f: text = f.read()
-        with open(caption_path, "r", encoding="utf-8") as f: caption = f.read()
-
-        post_time = find_scheduling_time()
-        schedule_time = post_time
-
-        print(f"Scheduling Post for '{str(post_time)}'")
-
-        # schedule_fb_post(image_path, text, schedule_time)
-        # save_post_in_db(caption, text, post_time)
-        put_post_in_db(caption, text, schedule_time, img)
 
 def post_pending():
-    print('Polling..')
+    Logger.info('Polling..')
 
     posts = get_not_posted_but_scheduled()
 
     if not posts:
         return
 
-    print("Pending posts: ", len(posts))
+    Logger.info("Pending posts: ", len(posts))
 
     for post in posts:
         text = post['text']
@@ -358,27 +377,31 @@ def post_pending():
 
         if not post['posted_on_fb']:
             try:
-                # post_on_fb(image_url, text)
-                print('Marking as posted on fb:', post_id)
+                if not CATOZER_DEBUG:
+                    post_on_fb(image_url, text)
+
+                Logger.info('Marking as posted on fb:', post_id)
                 mark_as_fb_posted(post_id)
             except:
-                pass
+                Logger.error('Could not update fb post in DB')
 
         if not post['posted_on_ig']:
             try:
-                # post_on_ig(image_url, text)
-                print('Marking as posted on ig:', post_id)
+                if not CATOZER_DEBUG:
+                    post_on_ig(image_url, text)
+
+                Logger.info('Marking as posted on ig:', post_id)
                 mark_as_ig_posted(post_id)
             except:
-                pass
-
-
+                Logger.error('Could not update ig post in DB')
 
 def run_server():
     ServerApp.config['TEMPLATES_AUTO_RELOAD'] = True
-    ServerApp.run(host='0.0.0.0', port=1313)
-    # waitress.serve(ServerApp, host='0.0.0.0', port=1313)
 
+    if CATOZER_DEBUG:
+        ServerApp.run(host='0.0.0.0', port=1313)
+    else:
+        waitress.serve(ServerApp, host='0.0.0.0', port=1313)
 
 @ServerApp.route("/")
 def index():
@@ -400,8 +423,13 @@ def images(filename):
 def main():
     threading.Thread(target=run_server, daemon=True).start()
 
+    poll_interval_seconds = 30
+    if CATOZER_DEBUG:
+        poll_interval_seconds = 1
+
+    logging.getLogger('apscheduler').setLevel(logging.ERROR)
     scheduler = BackgroundScheduler()
-    scheduler.add_job(post_pending, 'interval', seconds=1)
+    scheduler.add_job(post_pending, 'interval', seconds=poll_interval_seconds)
     scheduler.start()
 
     run_telegram()
@@ -409,7 +437,5 @@ def main():
 if __name__ == '__main__':
     main()
 
-# @TODO: proper logging
 # @TODO: Docker file
 # @TODO: Deploy to Atlas
-# @TODO: Error handling
