@@ -398,9 +398,6 @@ def images(filename):
     return send_from_directory(ServerApp.root_path + '/../downloads/', filename)
 
 def main():
-
-    print(find_scheduling_time())
-    return
     threading.Thread(target=run_server, daemon=True).start()
 
     scheduler = BackgroundScheduler()

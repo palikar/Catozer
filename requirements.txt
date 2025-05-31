@@ -1,4 +1,4 @@
-PIL
+pillow
 python-telegram-bot
 facebook-sdk
 google-genai
@@ -8,3 +8,4 @@ python-dotenv
 flask
 waitress
 apscheduler
+imgurpython
