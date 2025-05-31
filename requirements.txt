@@ -3,3 +3,5 @@ python-telegram-bot
 facebook-sdk
 google-genai
 moondream
+psycopg2-binary
+python-dotenv
