@@ -44,10 +44,12 @@ FACEBOOK_TOKEN = os.getenv("FACEBOOK_TOKEN")
 IG_TOKEN = os.getenv("IG_TOKEN")
 INSTAGRAM_TOKEN = os.getenv("INSTAGRAM_TOKEN")
 GEMINI_TOKEN = os.getenv("GEMINI_TOKEN")
+
 IMGUR_CLIENT_ID = os.getenv("IMGUR_CLIENT_ID")
 IMGUR_CLIENT_SECRET = os.getenv("IMGUR_CLIENT_SECRET")
 IMGUR_ACCESS_TOKEN= os.getenv("IMGUR_ACCESS_TOKEN")
 IMGUR_REFRESH_TOKEN= os.getenv("IMGUR_REFRESH_TOKEN")
+
 PAGE_ID = os.getenv("PAGE_ID")
 IG_ID = os.getenv("IG_ID")
 
@@ -61,15 +63,20 @@ CATOZER_DEBUG = os.getenv("CATOZER_DEBUG") == "1"
 
 DOWNLOAD_DIR = "downloads"
 
+# #(Models)
 MoondreamModel = moondream.vl(api_key=MOONDREAM_TOKEN)
 GeminiClient = genai.Client(api_key=GEMINI_TOKEN)
+
+# #(Socials)
 FacebookGraph = facebook.GraphAPI(access_token=FACEBOOK_TOKEN, version="3.1")
 IGGraph = facebook.GraphAPI(access_token=IG_TOKEN, version="3.1")
 Imgur = ImgurClient(IMGUR_CLIENT_ID, IMGUR_CLIENT_SECRET)
 Imgur.set_user_auth(IMGUR_ACCESS_TOKEN, IMGUR_REFRESH_TOKEN)
 
+# #(Server)
 ServerApp = Flask(__name__, static_url_path='', static_folder='../web/static', template_folder='../web/templates')
 
+# #(Database)
 DBConn = psycopg2.connect(
     dbname=DB_NAME,
     user=DB_USER,
@@ -78,8 +85,9 @@ DBConn = psycopg2.connect(
     port=DB_PORT
 )
 
+# #(logger)
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
 
     format='[%(asctime)s] %(levelname)s in %(name)s:%(lineno)d -- %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
@@ -91,6 +99,63 @@ logging.basicConfig(
 )
 
 Logger = logging.getLogger(__name__)
+
+def default_config():
+    config = {}
+
+    config['TELEGRAM_BOT_TOKEN'] = {
+        'token' : TELEGRAM_BOT_TOKEN,
+        'desc' : 'Telegram bot key'
+    }
+    config['MOONDREAM_TOKEN'] = {
+        'token' : MOONDREAM_TOKEN
+        ,
+        'desc' : 'Moondream API key'
+    }
+    config['FACEBOOK_TOKEN '] = {
+        'token' : FACEBOOK_TOKEN,
+        'desc' : 'Facebook page token'
+    }
+    config['IG_TOKEN '] = {
+        'token' : IG_TOKEN,
+        'desc' : 'Instagram page token'
+    }
+    config['INSTAGRAM_TOKEN '] = {
+        'token' : INSTAGRAM_TOKEN,
+        'desc' : 'Instagram page token'
+    }
+    config['GEMINI_TOKEN '] = {
+        'token' : GEMINI_TOKEN,
+        'desc' : 'Google Gemini API key'
+    }
+    config['IMGUR_CLIENT_ID '] = {
+        'token' : IMGUR_CLIENT_ID,
+        'desc' : 'Imgur client ID'
+    }
+    config['IMGUR_CLIENT_SECRET '] = {
+        'token' : IMGUR_CLIENT_SECRET,
+        'desc' : 'Imgur client secret'
+    }
+    config['IMGUR_ACCESS_TOKEN'] = {
+        'token' : IMGUR_ACCESS_TOKEN,
+        'desc' : 'Imgur access token'
+    }
+    config['IMGUR_REFRESH_TOKEN'] = {
+        'token' : IMGUR_REFRESH_TOKEN,
+        'desc' : 'Imgur refresh token'
+    }
+
+    config['PAGE_ID'] = {
+        'token' : PAGE_ID,
+        'desc' : 'Instagram page Id'
+    }
+    config['IG_ID '] = {
+        'token' : IG_ID,
+        'desc' : 'Facebook page Id'
+    }
+
+    return
+
 
 def put_post_in_db(caption, text, schedule_time, image_name):
     cur = DBConn.cursor()
@@ -121,25 +186,21 @@ def get_all_posts():
 
 def get_not_posted_but_scheduled():
     with DBConn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT id, text, image_name, posted_on_fb, posted_on_ig FROM posts WHERE (posted_on_fb = false OR posted_on_ig = false) AND schedule_time <= NOW();")
+        cur.execute("SET TIMEZONE='Europe/Berlin'; SELECT id, text, image_name, posted_on_fb, posted_on_ig FROM posts WHERE (posted_on_fb = false OR posted_on_ig = false) AND schedule_time <= NOW();")
         posts = cur.fetchall()
         DBConn.commit()
 
     return posts
 
 def mark_as_fb_posted(post_id):
-    cur = DBConn.cursor()
-    cur.execute("UPDATE posts SET posted_on_fb = true WHERE id = %s", (post_id, ))
-    DBConn.commit()
-    cur.close()
-    return posts
+    with DBConn.cursor() as cur:
+        cur.execute("UPDATE posts SET posted_on_fb = true WHERE id = %s", (post_id, ))
+        DBConn.commit()
 
 def mark_as_ig_posted(post_id):
-    cur = DBConn.cursor()
-    cur.execute("UPDATE posts SET posted_on_ig = true WHERE id = %s", (post_id, ))
-    DBConn.commit()
-    cur.close()
-    return posts
+    with DBConn.cursor() as cur:
+        cur.execute("UPDATE posts SET posted_on_ig = true WHERE id = %s", (post_id, ))
+        DBConn.commit()
 
 def has_free_slot_in_day(now, now_str, schedules_map):
     """
@@ -254,11 +315,12 @@ def post_on_fb(image_url, content):
                 album_path = 'me/photos',
                 published = False,
             )
-
         media_fbid = photo['id']
         Logger.info(f'Uploaded photo to Facebook - id: {media_fbid}')
-    except:
+    except Exception as e:
         Logger.error(f'Could not upload photo to Facebook')
+        Logger.error(e)
+        raise e
 
     try:
         post_data = {
@@ -266,8 +328,9 @@ def post_on_fb(image_url, content):
             'attached_media': str([{'media_fbid': media_fbid}]),
         }
         FacebookGraph.put_object(parent_object=PAGE_ID, connection_name='feed', **post_data)
-    except:
+    except Exception as e:
         Logger.error(f'Could not publish post to Facebook')
+        raise e
 
 def post_on_ig(image_url, content):
 
@@ -275,9 +338,10 @@ def post_on_ig(image_url, content):
         result = Imgur.upload_from_path(image_url, config=None, anon=False)
         link = result['link']
         Logger.error(f'Uploaded image with link {link}')
-    except:
+    except Exception as e:
         Logger.error('Could not upload image to Imgur')
-        return
+        Logger.error(e)
+        raise e
 
     try:
         media = IGGraph.put_object(
@@ -286,9 +350,11 @@ def post_on_ig(image_url, content):
             image_url=link,
             caption=content,
         )
-    except:
+        Logger.error(f'Created IG creation...')
+    except Exception as e:
         Logger.error('Could not upload media to Instagram')
-        return
+        Logger.error(e)
+        raise e
 
     try:
         creation_id = media['id']
@@ -298,9 +364,10 @@ def post_on_ig(image_url, content):
             connection_name='media_publish',
             creation_id=creation_id
         )
-    except:
+    except Exception as e:
         Logger.error('Could not publish media to Instagram')
-        return
+        Logger.error(e)
+        raise e
 
 
 async def handle_telegram_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -368,7 +435,7 @@ def post_pending():
     if not posts:
         return
 
-    Logger.info("Pending posts: ", len(posts))
+    Logger.info(f"Pending posts: {len(posts)}")
 
     for post in posts:
         text = post['text']
@@ -377,23 +444,24 @@ def post_pending():
 
         if not post['posted_on_fb']:
             try:
-                if not CATOZER_DEBUG:
-                    post_on_fb(image_url, text)
-
-                Logger.info('Marking as posted on fb:', post_id)
+                post_on_fb(image_url, text)
+                Logger.info(f'Marking as posted on fb:{post_id}')
                 mark_as_fb_posted(post_id)
-            except:
+            except Exception as e:
                 Logger.error('Could not update fb post in DB')
 
         if not post['posted_on_ig']:
             try:
-                if not CATOZER_DEBUG:
-                    post_on_ig(image_url, text)
-
-                Logger.info('Marking as posted on ig:', post_id)
+                post_on_ig(image_url, text)
+                Logger.info(f'Marking as posted on ig: {post_id}')
                 mark_as_ig_posted(post_id)
-            except:
+            except Exception as e:
                 Logger.error('Could not update ig post in DB')
+                Logger.error(e)
+
+    images = Imgur.get_account_images('palikar96')
+    for img in images:
+        print(Imgur.delete_image(img.id))
 
 def run_server():
     ServerApp.config['TEMPLATES_AUTO_RELOAD'] = True
@@ -421,6 +489,8 @@ def images(filename):
     return send_from_directory(ServerApp.root_path + '/../downloads/', filename)
 
 def main():
+    # post_pending()
+
     threading.Thread(target=run_server, daemon=True).start()
 
     poll_interval_seconds = 30
@@ -436,6 +506,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-# @TODO: Docker file
-# @TODO: Deploy to Atlas

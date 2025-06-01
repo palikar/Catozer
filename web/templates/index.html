@@ -14,6 +14,14 @@
 
     <div class="w-full max-w-7xl space-y-4">
 
+      <nav class="bg-white border-b border-gray-200 px-4 py-3 rounded-md my-5 border shadow-md">
+	<div class="max-w-6xl mx-auto flex space-x-6">
+	  <a href="/" class="text-gray-700 hover:text-blue-600">Dashboard</a>
+	  <a href="/" class="text-gray-700 hover:text-blue-600">Api Keys</a>
+
+	</div>
+      </nav>
+
       <!-- Example Post - Scheduled -->
 
       {% for key, day in days.items() %}
@@ -22,7 +30,7 @@
 
       </h2>
       {% for post in day.posts %}
-      <div class=" {% if post.posted %} bg-green-200 border-green-700 {% else  %} bg-white {% endif %}  border outline-1 shadow-md rounded-lg flex flex-col md:flex-row justify-between p-4">
+      <div class=" {% if post.posted_on_fb or post.posted_on_ig %} bg-green-200 border-green-700 {% else  %} bg-white {% endif %} border shadow-md rounded-lg flex flex-col md:flex-row justify-between p-4">
 
 	<div class="flex-1 flex flex-col justify-between w-xl">
 
@@ -43,6 +51,15 @@
 		Post Now
 	      </button>
 	    </div>
+
+	    {% if post.posted_on_fb %}
+	    <span class="font-bold">Posted On Facebook</span>
+	    {% endif %}
+
+	    {% if post.posted_on_ig %}
+	    <span class="font-bold">Posted On Instagram</span>
+	    {% endif %}
+
 	  </div>
 	</div>
 
@@ -58,5 +75,6 @@
       <!-- Example Post - Already Posted -->
 
     </div>
+
   </body>
 </html>
