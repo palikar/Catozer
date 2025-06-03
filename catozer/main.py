@@ -4,11 +4,15 @@ import sys
 import logging
 from datetime import datetime, timedelta, time
 import threading
+import urllib.parse
+from pathlib import Path
+import asyncio
+import requests
 
 from PIL import Image
 
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram import Update, Bot
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CommandHandler
 
 import moondream
 
@@ -24,7 +28,8 @@ from imgurpython import ImgurClient
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from flask import Flask, render_template, send_from_directory
+from flask import Flask, render_template, send_from_directory, request, jsonify
+import flask
 import waitress
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -35,8 +40,6 @@ AVAILABLE_DAY_TIMES = [
     10,
     18
 ]
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 MOONDREAM_TOKEN=os.getenv("MOONDREAM_TOKEN")
 
@@ -52,29 +55,14 @@ IMGUR_REFRESH_TOKEN= os.getenv("IMGUR_REFRESH_TOKEN")
 
 PAGE_ID = os.getenv("PAGE_ID")
 IG_ID = os.getenv("IG_ID")
+IG_CLIENT_SECRET = os.getenv("IG_CLIENT_SECRET")
+IG_CLIENT_ID = os.getenv("IG_CLIENT_ID")
 
 DB_HOST = os.getenv("DB_HOST")
 DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASS = os.getenv("DB_PASS")
 DB_PORT = os.getenv("DB_PORT")
-
-CATOZER_DEBUG = os.getenv("CATOZER_DEBUG") == "1"
-
-DOWNLOAD_DIR = "downloads"
-
-# #(Models)
-MoondreamModel = moondream.vl(api_key=MOONDREAM_TOKEN)
-GeminiClient = genai.Client(api_key=GEMINI_TOKEN)
-
-# #(Socials)
-FacebookGraph = facebook.GraphAPI(access_token=FACEBOOK_TOKEN, version="3.1")
-IGGraph = facebook.GraphAPI(access_token=IG_TOKEN, version="3.1")
-Imgur = ImgurClient(IMGUR_CLIENT_ID, IMGUR_CLIENT_SECRET)
-Imgur.set_user_auth(IMGUR_ACCESS_TOKEN, IMGUR_REFRESH_TOKEN)
-
-# #(Server)
-ServerApp = Flask(__name__, static_url_path='', static_folder='../web/static', template_folder='../web/templates')
 
 # #(Database)
 DBConn = psycopg2.connect(
@@ -84,6 +72,76 @@ DBConn = psycopg2.connect(
     host=DB_HOST,
     port=DB_PORT
 )
+
+def default_config():
+    config = {}
+
+    config['TELEGRAM_BOT_TOKEN'] = os.getenv('TELEGRAM_BOT_TOKEN')
+    config['MOONDREAM_TOKEN'] = os.getenv('MOONDREAM_TOKEN')
+    config['FACEBOOK_TOKEN'] = os.getenv('FACEBOOK_TOKEN')
+    config['IG_TOKEN'] = os.getenv('IG_TOKEN')
+    config['INSTAGRAM_TOKEN '] = os.getenv('INSTAGRAM_TOKEN')
+    config['GEMINI_TOKEN '] = os.getenv('GEMINI_TOKEN')
+    config['IMGUR_CLIENT_ID'] = os.getenv('IMGUR_CLIENT_ID')
+    config['IMGUR_CLIENT_SECRET'] = os.getenv('IMGUR_CLIENT_SECRET')
+    config['IMGUR_ACCESS_TOKEN'] = os.getenv('IMGUR_ACCESS_TOKEN')
+    config['IMGUR_REFRESH_TOKEN'] = os.getenv('IMGUR_REFRESH_TOKEN')
+    config['PAGE_ID'] = os.getenv('PAGE_ID')
+    config['IG_ID'] = os.getenv('IG_ID')
+    config['IG_CLIENT_ID'] = os.getenv('IG_CLIENT_ID')
+    config['IG_CLIENT_SECRET'] = os.getenv('IG_CLIENT_SECRET')
+
+    return config
+
+def db_config_fields():
+    with DBConn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT * FROM config")
+        confs = cur.fetchall()
+        DBConn.commit()
+
+    conf_dict = {}
+    for conf in confs:
+        conf_dict[conf['name']] = conf['value']
+
+    return conf_dict
+
+def add_db_config_fields(name, value):
+    cur = DBConn.cursor()
+    cur.execute("""INSERT INTO config (name, value) VALUES (%s, %s)""", (name, value))
+    DBConn.commit()
+    cur.close()
+
+def update_config_field(name, value):
+    cur = DBConn.cursor()
+    cur.execute("""UPDATE config SET value = %s WHERE name = %s""", (value, name))
+    DBConn.commit()
+    cur.close()
+
+def load_config():
+    config = {}
+    defaults = default_config()
+    db_conf = db_config_fields()
+
+    for name, value in defaults.items():
+        if name not in db_conf.keys():
+            config[name] = value
+            add_db_config_fields(name, value)
+        else:
+            config[name] = db_conf[name]
+
+    return config
+
+
+CONFIG = load_config()
+
+CATOZER_DEBUG = os.getenv("CATOZER_DEBUG") == "1"
+
+DOWNLOAD_DIR = "downloads"
+
+
+
+# #(Server)
+ServerApp = Flask(__name__, static_url_path='', static_folder='../web/static', template_folder='../web/templates')
 
 # #(logger)
 logging.basicConfig(
@@ -99,62 +157,6 @@ logging.basicConfig(
 )
 
 Logger = logging.getLogger(__name__)
-
-def default_config():
-    config = {}
-
-    config['TELEGRAM_BOT_TOKEN'] = {
-        'token' : TELEGRAM_BOT_TOKEN,
-        'desc' : 'Telegram bot key'
-    }
-    config['MOONDREAM_TOKEN'] = {
-        'token' : MOONDREAM_TOKEN
-        ,
-        'desc' : 'Moondream API key'
-    }
-    config['FACEBOOK_TOKEN '] = {
-        'token' : FACEBOOK_TOKEN,
-        'desc' : 'Facebook page token'
-    }
-    config['IG_TOKEN '] = {
-        'token' : IG_TOKEN,
-        'desc' : 'Instagram page token'
-    }
-    config['INSTAGRAM_TOKEN '] = {
-        'token' : INSTAGRAM_TOKEN,
-        'desc' : 'Instagram page token'
-    }
-    config['GEMINI_TOKEN '] = {
-        'token' : GEMINI_TOKEN,
-        'desc' : 'Google Gemini API key'
-    }
-    config['IMGUR_CLIENT_ID '] = {
-        'token' : IMGUR_CLIENT_ID,
-        'desc' : 'Imgur client ID'
-    }
-    config['IMGUR_CLIENT_SECRET '] = {
-        'token' : IMGUR_CLIENT_SECRET,
-        'desc' : 'Imgur client secret'
-    }
-    config['IMGUR_ACCESS_TOKEN'] = {
-        'token' : IMGUR_ACCESS_TOKEN,
-        'desc' : 'Imgur access token'
-    }
-    config['IMGUR_REFRESH_TOKEN'] = {
-        'token' : IMGUR_REFRESH_TOKEN,
-        'desc' : 'Imgur refresh token'
-    }
-
-    config['PAGE_ID'] = {
-        'token' : PAGE_ID,
-        'desc' : 'Instagram page Id'
-    }
-    config['IG_ID '] = {
-        'token' : IG_ID,
-        'desc' : 'Facebook page Id'
-    }
-
-    return
 
 
 def put_post_in_db(caption, text, schedule_time, image_name):
@@ -292,11 +294,15 @@ def find_scheduling_time():
     return get_free_slot(now, now_str, schedules_map)
 
 def generate_photo_caption(image_path):
+
+    MoondreamModel = moondream.vl(api_key=CONFIG['MOONDREAM_TOKEN'])
     image = Image.open(image_path)
     caption_response = MoondreamModel.caption(image, length="normal")
     return caption_response["caption"]
 
 def generate_post_content(caption):
+
+    GeminiClient = genai.Client(api_key=CONFIG['GEMINI_TOKEN'])
     response = GeminiClient.models.generate_content(
         model="gemini-2.0-flash",
         config=types.GenerateContentConfig(
@@ -308,6 +314,8 @@ def generate_post_content(caption):
     return text
 
 def post_on_fb(image_url, content):
+
+    FacebookGraph = facebook.GraphAPI(access_token=CONFIG['FACEBOOK_TOKEN'], version="3.1")
     try:
         with open(image_url, 'rb') as image:
             photo = FacebookGraph.put_photo(
@@ -333,39 +341,61 @@ def post_on_fb(image_url, content):
         raise e
 
 def post_on_ig(image_url, content):
+    Imgur = ImgurClient(CONFIG['IMGUR_CLIENT_ID'], CONFIG['IMGUR_CLIENT_SECRET'])
+    Imgur.set_user_auth(CONFIG['IMGUR_ACCESS_TOKEN'], CONFIG['IMGUR_REFRESH_TOKEN'])
 
     try:
         result = Imgur.upload_from_path(image_url, config=None, anon=False)
         link = result['link']
-        Logger.error(f'Uploaded image with link {link}')
+        img_id = result['id']
+        Logger.info(f'Uploaded image with link {link}')
     except Exception as e:
         Logger.error('Could not upload image to Imgur')
         Logger.error(e)
         raise e
 
     try:
-        media = IGGraph.put_object(
-            parent_object=IG_ID,
-            connection_name='media',
-            image_url=link,
-            caption=content,
-        )
-        Logger.error(f'Created IG creation...')
+        payload = {
+            'image_url': link,
+            'caption': content,
+            'access_token': CONFIG['IG_TOKEN'],
+        }
+        response = requests.post(f'https://graph.instagram.com/me/media', data=payload)
+        response = response.json()
+        Logger.info(f'Created IG creation...')
     except Exception as e:
         Logger.error('Could not upload media to Instagram')
         Logger.error(e)
+
+        Logger.info(f'Deleting imgur image: {img_id}')
+        Imgur.delete_image(img_id)
+
         raise e
 
     try:
-        creation_id = media['id']
-        Logger.error(f'Uploading creation id {creation_id}')
-        result = IGGraph.put_object(
-            parent_object=IG_ID,
-            connection_name='media_publish',
-            creation_id=creation_id
-        )
+        creation_id = response['id']
+        Logger.info(f'Uploading creation id {creation_id}')
+        payload = {
+            'image_url': link,
+            'creation_id': creation_id,
+            'access_token': CONFIG['IG_TOKEN']
+        }
+        response = requests.post(f'https://graph.instagram.com/me/media_publish', data=payload)
+        response = response.json()
     except Exception as e:
         Logger.error('Could not publish media to Instagram')
+        Logger.error(e)
+
+        Logger.info(f'Deleting imgur image: {img_id}')
+        Imgur.delete_image(img_id)
+
+        raise e
+
+    try:
+        Logger.info(f'Deleting imgur image: {img_id}')
+        Imgur.delete_image(img_id)
+    except Exception as e:
+        Logger.error('Could not delete imgur id')
         Logger.error(e)
         raise e
 
@@ -414,17 +444,65 @@ async def handle_telegram_photo(update: Update, context: ContextTypes.DEFAULT_TY
         Logger.info(f'Something went wrong but the post should be in the DB')
         await update.message.reply_text(f"❌ Something went wrong but will retry in some while.")
 
+SUBSCRIBERS_FILE = Path("subscribers.json")
+
+async def send_to_subs(message):
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+
+    with open("subscribers.json", "r") as f:
+        subscribers = json.load(f)
+
+    for chat_id in subscribers:
+        try:
+            await bot.send_message(chat_id=chat_id, text=message)
+        except Exception as e:
+            log.error(f"Failed to send to {chat_id}: {e}")
+
+
+
+def load_subscribers():
+    if SUBSCRIBERS_FILE.exists():
+        with open(SUBSCRIBERS_FILE, "r") as f:
+            return set(json.load(f))
+    return set()
+
+def save_subscribers(subscribers):
+    with open(SUBSCRIBERS_FILE, "w") as f:
+        json.dump(list(subscribers), f)
+
+async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    subscribers = load_subscribers()
+    if chat_id in subscribers:
+        await update.message.reply_text("You're already subscribed to error notifications.")
+    else:
+        subscribers.add(chat_id)
+        save_subscribers(subscribers)
+        await update.message.reply_text("✅ Subscribed to error notifications.")
+
+async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    subscribers = load_subscribers()
+    if chat_id not in subscribers:
+        await update.message.reply_text("You're not currently subscribed.")
+    else:
+        subscribers.remove(chat_id)
+        save_subscribers(subscribers)
+        await update.message.reply_text("✅ Unsubscribed from error notifications.")
+
 def run_telegram():
     try:
         os.makedirs(DOWNLOAD_DIR)
     except OSError:
         pass
 
-    telegram_app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    telegram_app.add_handler(MessageHandler(filters.PHOTO, handle_telegram_photo))
+    TelegramApp = ApplicationBuilder().token(CONFIG['TELEGRAM_BOT_TOKEN']).build()
+    TelegramApp.add_handler(MessageHandler(filters.PHOTO, handle_telegram_photo))
+    TelegramApp.add_handler(CommandHandler("subscribe", subscribe))
+    TelegramApp.add_handler(CommandHandler("unsubscribe", unsubscribe))
 
     Logger.info('Starting Telegram Bot...')
-    telegram_app.run_polling()
+    TelegramApp.run_polling()
 
 
 def post_pending():
@@ -459,15 +537,11 @@ def post_pending():
                 Logger.error('Could not update ig post in DB')
                 Logger.error(e)
 
-    images = Imgur.get_account_images('palikar96')
-    for img in images:
-        print(Imgur.delete_image(img.id))
-
 def run_server():
     ServerApp.config['TEMPLATES_AUTO_RELOAD'] = True
 
     if CATOZER_DEBUG:
-        ServerApp.run(host='0.0.0.0', port=1313)
+        ServerApp.run(ssl_context=('cert.pem', 'key.pem'), host='0.0.0.0', port=1313)
     else:
         waitress.serve(ServerApp, host='0.0.0.0', port=1313)
 
@@ -484,25 +558,102 @@ def index():
 
     return render_template('index.html', days=days)
 
+@ServerApp.route("/config")
+def config():
+    db_config = db_config_fields()
+
+    Imgur = ImgurClient(CONFIG['IMGUR_CLIENT_ID'], CONFIG['IMGUR_CLIENT_SECRET'])
+    imgur_link = Imgur.get_auth_url('pin')
+
+    return render_template('config.html', tokens=db_config,
+                           messages=[],
+                           imgur_link=imgur_link)
+
+@ServerApp.route("/api/ig_token")
+def api_ig_token():
+    app_id = "1038808407801073"
+    redirect = "https://localhost:1313/api/ig_token/callback"
+    perms = "instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments,instagram_business_content_publish"
+    params = {
+        'client_id': app_id,
+        'redirect_uri': redirect,
+        'scope': perms,
+        'response_type': 'code',
+    }
+
+    auth_link = "https://www.instagram.com/oauth/authorize"
+    url = f"{auth_link}?client_id={app_id}&redirect_uri={redirect}&response_type=code&scope={perms}&code=1234"
+    url = f"{auth_link}?{urllib.parse.urlencode(params)}"
+
+    return flask.redirect(url, code=302)
+
+@ServerApp.route("/api/ig_token/callback")
+def api_ig_token_callback():
+    code = request.args.get('code')
+
+    redirect = "https://localhost:1313/api/ig_token/callback"
+    payload = {
+        'client_id': IG_CLIENT_ID,
+        'client_secret': IG_CLIENT_SECRET,
+        'grant_type': 'authorization_code',
+        'redirect_uri': redirect,
+        'code': code,
+    }
+    response = requests.post('https://api.instagram.com/oauth/access_token', data=payload)
+    response = response.json()
+    short_access_token = response['access_token']
+
+    redirect = "https://localhost:1313/api/ig_token/callback"
+    payload = {
+        'client_secret': IG_CLIENT_SECRET,
+        'grant_type': 'ig_exchange_token',
+        'access_token' : short_access_token
+    }
+
+    auth_link = 'https://graph.instagram.com/access_token'
+    url = f"{auth_link}?{urllib.parse.urlencode(payload)}"
+    response = requests.get(url)
+    response = response.json()
+    short_access_token = response['access_token']
+
+    update_config_field('IG_TOKEN', short_access_token)
+
+    return flask.redirect("/config", code=302)
+
+@ServerApp.route("/api/imgur_pin", methods=['POST'])
+def api_imgur_pin():
+    pin = request.form.get('pin')
+    print(pin)
+
+    Imgur = ImgurClient(CONFIG['IMGUR_CLIENT_ID'], CONFIG['IMGUR_CLIENT_SECRET'])
+
+    credentials = Imgur.authorize(pin, 'pin')
+    update_config_field('IMGUR_ACCESS_TOKEN', credentials['access_token'])
+    update_config_field('IMGUR_REFRESH_TOKEN', credentials['refresh_token'])
+    print(credentials)
+
+    return flask.redirect("/config", code=302)
+
+@ServerApp.route("/api/set_config/<key>", methods=['POST'])
+def api_set_config(key):
+    value = request.form.get('value')
+    update_config_field(key, value)
+
+    return flask.redirect("/config", code=302)
+
 @ServerApp.route("/images/<path:filename>")
 def images(filename):
     return send_from_directory(ServerApp.root_path + '/../downloads/', filename)
 
 def main():
-    # post_pending()
-
     threading.Thread(target=run_server, daemon=True).start()
 
     poll_interval_seconds = 30
     if CATOZER_DEBUG:
         poll_interval_seconds = 1
-
     logging.getLogger('apscheduler').setLevel(logging.ERROR)
     scheduler = BackgroundScheduler()
     scheduler.add_job(post_pending, 'interval', seconds=poll_interval_seconds)
     scheduler.start()
 
     run_telegram()
-
-if __name__ == '__main__':
-    main()
