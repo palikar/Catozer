@@ -1,0 +1,2 @@
+Build Container: docker build -t 192.168.178.54:3003/palikar/catozer:latest .
+Upload Container: docker push 192.168.178.54:3003/palikar/catozer:latest                              #upload
