@@ -50,6 +50,12 @@
 	      <button class="bg-blue-600 text-white text-sm px-4 py-2 rounded hover:bg-blue-700 transition">
 		Post Now
 	      </button>
+
+	      <a href="/api/regen/{{ post.id }}">
+		<button class="bg-blue-600 text-white text-sm px-4 py-2 rounded hover:bg-blue-700 transition cursor-pointer">
+		  Regenerate
+		</button>
+	      </a>
 	    </div>
 
 	    {% if post.posted_on_fb %}

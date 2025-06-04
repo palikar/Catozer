@@ -81,7 +81,7 @@ def default_config():
     config['FACEBOOK_TOKEN'] = os.getenv('FACEBOOK_TOKEN')
     config['IG_TOKEN'] = os.getenv('IG_TOKEN')
     config['INSTAGRAM_TOKEN '] = os.getenv('INSTAGRAM_TOKEN')
-    config['GEMINI_TOKEN '] = os.getenv('GEMINI_TOKEN')
+    config['GEMINI_TOKEN'] = os.getenv('GEMINI_TOKEN')
     config['IMGUR_CLIENT_ID'] = os.getenv('IMGUR_CLIENT_ID')
     config['IMGUR_CLIENT_SECRET'] = os.getenv('IMGUR_CLIENT_SECRET')
     config['IMGUR_ACCESS_TOKEN'] = os.getenv('IMGUR_ACCESS_TOKEN')
@@ -112,6 +112,9 @@ def add_db_config_fields(name, value):
     cur.close()
 
 def update_config_field(name, value):
+    global CONFIG
+    CONFIG[name] = value
+
     cur = DBConn.cursor()
     cur.execute("""UPDATE config SET value = %s WHERE name = %s""", (value, name))
     DBConn.commit()
@@ -131,6 +134,34 @@ def load_config():
 
     return config
 
+def does_chatter_exists_in_db(chat_id):
+    cur = DBConn.cursor()
+    cur.execute("SELECT COUNT(*) FROM chat_users WHERE chat_name = %s", (chat_id, ))
+    count = cur.fetchall()
+    DBConn.commit()
+    cur.close()
+    return count[0][0] != 0
+
+def new_chatter_in_db(chat_id, name, subscribed):
+    cur = DBConn.cursor()
+    print((chat_id, name, subscribed, ))
+    cur.execute("INSERT INTO chat_users (chat_name, name, subscribed) VALUES(%s, %s, %s)",
+                (chat_id, name, subscribed, ))
+    DBConn.commit()
+    cur.close()
+
+def subscribe_chatter_in_db(chat_id, subbed):
+    cur = DBConn.cursor()
+    cur.execute("UPDATE chat_users SET subscribed = %s WHERE chat_name = %s", (subbed, chat_id))
+    DBConn.commit()
+    cur.close()
+
+def get_chat_subscribes():
+    with DBConn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT * FROM chat_users WHERE subscribed = 'true' AND verified = 'true'")
+        users = cur.fetchall()
+        DBConn.commit()
+    return users
 
 CONFIG = load_config()
 
@@ -186,6 +217,21 @@ def get_all_posts():
 
     return posts
 
+def get_post(post_id):
+    with DBConn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT * FROM posts WHERE id = %s", (post_id, ))
+        posts = cur.fetchone()
+        DBConn.commit()
+
+    return posts
+
+def update_post(post_id, caption, text):
+    cur = DBConn.cursor()
+    cur.execute("UPDATE posts SET caption = %s, text = %sWHERE id = %s", (caption, text, post_id, ))
+    DBConn.commit()
+    cur.close()
+
+
 def get_not_posted_but_scheduled():
     with DBConn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SET TIMEZONE='Europe/Berlin'; SELECT id, text, image_name, posted_on_fb, posted_on_ig FROM posts WHERE (posted_on_fb = false OR posted_on_ig = false) AND schedule_time <= NOW();")
@@ -193,6 +239,14 @@ def get_not_posted_but_scheduled():
         DBConn.commit()
 
     return posts
+
+def count_posts_in_queue():
+    with DBConn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SET TIMEZONE='Europe/Berlin'; SELECT COUNT(*) FROM posts WHERE (posted_on_fb = false OR posted_on_ig = false) AND schedule_time > NOW();")
+        count = cur.fetchall()
+        DBConn.commit()
+
+    return count[0]['count']
 
 def mark_as_fb_posted(post_id):
     with DBConn.cursor() as cur:
@@ -340,6 +394,9 @@ def post_on_fb(image_url, content):
         Logger.error(f'Could not publish post to Facebook')
         raise e
 
+    send_chat_subs_message('✉️ Posted on Facebook ✅')
+
+
 def post_on_ig(image_url, content):
     Imgur = ImgurClient(CONFIG['IMGUR_CLIENT_ID'], CONFIG['IMGUR_CLIENT_SECRET'])
     Imgur.set_user_auth(CONFIG['IMGUR_ACCESS_TOKEN'], CONFIG['IMGUR_REFRESH_TOKEN'])
@@ -399,8 +456,24 @@ def post_on_ig(image_url, content):
         Logger.error(e)
         raise e
 
+    send_chat_subs_message('✉️ Posted on Instagram ✅')
 
-async def handle_telegram_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def send_chat_subs_message(msg):
+
+    async def send_chat_message(msg):
+        Logger.info(f'Sending bot message: {msg}')
+        TelegramApp = ApplicationBuilder().token(CONFIG['TELEGRAM_BOT_TOKEN']).build()
+        subs = get_chat_subscribes()
+        for sub in subs:
+            await TelegramApp.bot.send_message(chat_id=sub['chat_name'], text=msg)
+
+    asyncio.run(send_chat_message(msg))
+
+def get_photo_caption_and_text():
+    pass
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("🖼️ Image received. Processing started...")
 
@@ -423,7 +496,7 @@ async def handle_telegram_photo(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         if caption is not None:
             post_text = generate_post_content(caption)
-            Logger.info(f"Content for post: {post_text}")
+            Logger.info(f"Generated content for post!")
             await update.message.reply_text(f"👍 Post: {post_text}")
     except:
         Logger.error('Could generate post content with Gemini')
@@ -444,51 +517,37 @@ async def handle_telegram_photo(update: Update, context: ContextTypes.DEFAULT_TY
         Logger.info(f'Something went wrong but the post should be in the DB')
         await update.message.reply_text(f"❌ Something went wrong but will retry in some while.")
 
-SUBSCRIBERS_FILE = Path("subscribers.json")
-
-async def send_to_subs(message):
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
-
-    with open("subscribers.json", "r") as f:
-        subscribers = json.load(f)
-
-    for chat_id in subscribers:
-        try:
-            await bot.send_message(chat_id=chat_id, text=message)
-        except Exception as e:
-            log.error(f"Failed to send to {chat_id}: {e}")
-
-
-
-def load_subscribers():
-    if SUBSCRIBERS_FILE.exists():
-        with open(SUBSCRIBERS_FILE, "r") as f:
-            return set(json.load(f))
-    return set()
-
-def save_subscribers(subscribers):
-    with open(SUBSCRIBERS_FILE, "w") as f:
-        json.dump(list(subscribers), f)
-
-async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    subscribers = load_subscribers()
-    if chat_id in subscribers:
-        await update.message.reply_text("You're already subscribed to error notifications.")
-    else:
-        subscribers.add(chat_id)
-        save_subscribers(subscribers)
-        await update.message.reply_text("✅ Subscribed to error notifications.")
+    name = update.message.chat.first_name + '_' + update.message.chat.last_name
 
-async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    subscribers = load_subscribers()
-    if chat_id not in subscribers:
-        await update.message.reply_text("You're not currently subscribed.")
+    if not does_chatter_exists_in_db(chat_id):
+        Logger.info(f'New chatter wants to subscribe: {name}')
+        new_chatter_in_db(chat_id, name, True)
+        await update.message.reply_text("🙋‍♂️ New user in db! Hello 👋!")
+        await update.message.reply_text("You are now subscribed 👍")
     else:
-        subscribers.remove(chat_id)
-        save_subscribers(subscribers)
-        await update.message.reply_text("✅ Unsubscribed from error notifications.")
+        Logger.info(f'Chatter wants to subscribe: {name}')
+        subscribe_chatter_in_db(chat_id, True)
+        await update.message.reply_text("You are now subscribed 👍")
+
+
+async def handle_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    name = update.message.chat.first_name + '_' + update.message.chat.last_name
+
+    if not does_chatter_exists_in_db(chat_id):
+        Logger.info(f'New chatter wants to unsubscribe: {name}')
+        new_chatter_in_db(chat_id, name, False)
+        await update.message.reply_text("🙋‍♂️ New user in db! Hello 👋!")
+        await update.message.reply_text("You are now unsubscribed 👍")
+    else:
+        Logger.info(f'Chatter wants to unsubscribe: {name}')
+        subscribe_chatter_in_db(chat_id, False)
+        await update.message.reply_text("You are now unsubscribed 👍")
+
+async def handle_health_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("😼 It's all gud boss!✔️")
 
 def run_telegram():
     try:
@@ -497,9 +556,10 @@ def run_telegram():
         pass
 
     TelegramApp = ApplicationBuilder().token(CONFIG['TELEGRAM_BOT_TOKEN']).build()
-    TelegramApp.add_handler(MessageHandler(filters.PHOTO, handle_telegram_photo))
-    TelegramApp.add_handler(CommandHandler("subscribe", subscribe))
-    TelegramApp.add_handler(CommandHandler("unsubscribe", unsubscribe))
+    TelegramApp.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    TelegramApp.add_handler(CommandHandler("subscribe", handle_subscribe))
+    TelegramApp.add_handler(CommandHandler("unsubscribe", handle_unsubscribe))
+    TelegramApp.add_handler(CommandHandler("health", handle_health_check))
 
     Logger.info('Starting Telegram Bot...')
     TelegramApp.run_polling()
@@ -527,6 +587,7 @@ def post_pending():
                 mark_as_fb_posted(post_id)
             except Exception as e:
                 Logger.error('Could not update fb post in DB')
+                send_chat_subs_message(f'⛔ Problem! Could not update Facebook post in DB; Error: {e}')
 
         if not post['posted_on_ig']:
             try:
@@ -536,6 +597,27 @@ def post_pending():
             except Exception as e:
                 Logger.error('Could not update ig post in DB')
                 Logger.error(e)
+                send_chat_subs_message(f'⛔ Problem! Could not update Instagram post in DB; Error: {e}')
+
+def check_post_queue():
+    Logger.info('Checking queue...')
+    now = datetime.now().time()
+    if not (time(9, 0) <= now <= time(23, 0)):
+        Logger.info(f'It\'s too eraly/late to notify chatters!')
+        return
+
+    posts_in_queue = count_posts_in_queue()
+    Logger.info(f'Posts in queue: {posts_in_queue}')
+
+    min_days_with_posts = 2
+    posts_per_day = 2
+    if not posts_in_queue < min_days_with_posts * posts_per_day:
+        return
+
+    send_chat_subs_message(f'🚨 Post queue is getting low! Posts in queue left: {posts_in_queue}')
+
+def health_update():
+    send_chat_subs_message(f"😼 It's all gud boss!✔️")
 
 def run_server():
     ServerApp.config['TEMPLATES_AUTO_RELOAD'] = True
@@ -641,6 +723,33 @@ def api_set_config(key):
 
     return flask.redirect("/config", code=302)
 
+@ServerApp.route("/api/regen/<post_id>", methods=['GET'])
+def api_regen_post(post_id):
+    post = get_post(post_id)
+
+    file_path = ServerApp.root_path + '/../downloads/' + post['image_name']
+    post_text = None
+    caption = None
+
+    try:
+        caption = generate_photo_caption(file_path)
+        Logger.info(f"Caption for photo: {caption}")
+    except:
+        Logger.error('Could generate post caption with Moondream')
+
+    try:
+        if caption is not None:
+            post_text = generate_post_content(caption)
+            Logger.info(f"Generated content for post!")
+    except Exception as e:
+        Logger.error('Could generate post content with Gemini')
+        Logger.error(e)
+
+    if caption is not None and post_text is not None:
+        update_post(post_id, caption, post_text)
+
+    return flask.redirect("/", code=302)
+
 @ServerApp.route("/images/<path:filename>")
 def images(filename):
     return send_from_directory(ServerApp.root_path + '/../downloads/', filename)
@@ -654,6 +763,8 @@ def main():
     logging.getLogger('apscheduler').setLevel(logging.ERROR)
     scheduler = BackgroundScheduler()
     scheduler.add_job(post_pending, 'interval', seconds=poll_interval_seconds)
+    scheduler.add_job(check_post_queue, 'interval', hours=4)
+    scheduler.add_job(health_update, 'interval', hours=12)
     scheduler.start()
 
     run_telegram()
