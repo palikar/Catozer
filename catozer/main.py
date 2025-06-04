@@ -622,10 +622,7 @@ def health_update():
 def run_server():
     ServerApp.config['TEMPLATES_AUTO_RELOAD'] = True
 
-    if CATOZER_DEBUG:
-        ServerApp.run(ssl_context=('cert.pem', 'key.pem'), host='0.0.0.0', port=1313)
-    else:
-        waitress.serve(ServerApp, host='0.0.0.0', port=1313)
+    ServerApp.run(ssl_context=('cert.pem', 'key.pem'), host='0.0.0.0', port=1313)
 
 @ServerApp.route("/")
 def index():
