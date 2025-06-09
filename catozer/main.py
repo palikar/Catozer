@@ -201,7 +201,7 @@ def put_post_in_db(caption, text, schedule_time, image_name):
 
 def get_schedules():
     cur = DBConn.cursor()
-    cur.execute("SELECT schedule_time FROM posts WHERE schedule_time > NOW()")
+    cur.execute("SELECT schedule_time FROM posts WHERE schedule_time > NOW() - INTERVAL '1 day'")
     posts = cur.fetchall()
     posts = [p[0] for p in posts]
     DBConn.commit()
@@ -270,7 +270,7 @@ def has_free_slot_in_day(now, now_str, schedules_map):
     Returns:
         bool: True if there is at least one free and valid (i.e., future) slot on the day.
     """
-    # If the day has no scheduled posts yet, there is a free slot.
+
     if now_str not in schedules_map:
         return True
 
@@ -461,7 +461,7 @@ def post_on_ig(image_url, content):
 def send_chat_subs_message(msg):
 
     async def send_chat_message(msg):
-        Logger.info(f'Sending bot message: {msg}')
+        print(f'Sending bot message: {msg}')
         TelegramApp = ApplicationBuilder().token(CONFIG['TELEGRAM_BOT_TOKEN']).build()
         subs = get_chat_subscribes()
         for sub in subs:
