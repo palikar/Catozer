@@ -360,7 +360,7 @@ def generate_post_content(caption):
     response = GeminiClient.models.generate_content(
         model="gemini-2.0-flash",
         config=types.GenerateContentConfig(
-            system_instruction="Това ще е в пост в инстаграм. Страницата за която става въпрос е Cattos. В нея публикувам снимки и историики за премеждията на котарака Марципан. Ще трябва да ми помогнеш с правенеот на съдаржание за тази страница. Аз ще ти давам описание на картинката, ти ще ми даваш забавен пост за Марципан,  който ще е за facebook и instagram. Марципан е раг-дол котка, а не сиамка, имай го предвид. Давай ми само текста на поста, коригирай породата на Марципан. Прави постовете малко по-дълги - 4-5 изречения и вкарвай кратка измислена историйка от живота на Марципан, която да е подходяща за описанието на снимкат. Отговряй на Български език."),
+            system_instruction="Това ще е в пост в инстаграм. Страницата за която става въпрос е Cattos. В нея публикувам снимки и историики за премеждията на котарака Марципан. Ще трябва да ми помогнеш с правенеот на съдаржание за тази страница. Аз ще ти давам описание на картинката, ти ще ми даваш забавен пост за Марципан,  който ще е за facebook и instagram. Марципан е раг-дол котка, а не сиамка, имай го предвид. Давай ми само текста на поста. Прави постовете малко по-къси - 2-3 изречения и вкарвай кратка измислена историйка от живота на Марципан, която да е подходяща за описанието на снимкат. Отговряй на Български език и не прави правописни грешки."),
         contents=[caption]
     )
 
@@ -587,7 +587,7 @@ def post_pending():
                 mark_as_fb_posted(post_id)
             except Exception as e:
                 Logger.error('Could not update fb post in DB')
-                send_chat_subs_message(f'⛔ Problem! Could not update Facebook post in DB; Error: {e}')
+                # send_chat_subs_message(f'⛔ Problem! Could not update Facebook post in DB; Error: {e}')
 
         if not post['posted_on_ig']:
             try:
@@ -597,7 +597,7 @@ def post_pending():
             except Exception as e:
                 Logger.error('Could not update ig post in DB')
                 Logger.error(e)
-                send_chat_subs_message(f'⛔ Problem! Could not update Instagram post in DB; Error: {e}')
+                # send_chat_subs_message(f'⛔ Problem! Could not update Instagram post in DB; Error: {e}')
 
 def check_post_queue():
     Logger.info('Checking queue...')
