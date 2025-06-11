@@ -142,6 +142,14 @@ def does_chatter_exists_in_db(chat_id):
     cur.close()
     return count[0][0] != 0
 
+def is_chatter_verified_in_db(chat_id):
+    cur = DBConn.cursor()
+    cur.execute("SELECT COUNT(*) FROM chat_users WHERE chat_name = %s AND verified = 'true'", (chat_id, ))
+    count = cur.fetchall()
+    DBConn.commit()
+    cur.close()
+    return count[0][0] != 0
+
 def new_chatter_in_db(chat_id, name, subscribed):
     cur = DBConn.cursor()
     print((chat_id, name, subscribed, ))
@@ -186,6 +194,9 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+logging.getLogger('telegram').setLevel(logging.WARNING)
+logging.getLogger('telegram.bot').setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 Logger = logging.getLogger(__name__)
 
@@ -377,22 +388,28 @@ def post_on_fb(image_url, content):
                 album_path = 'me/photos',
                 published = False,
             )
+
+            if 'error' not in photo.keys():
+                raise Exception(f"Therer is an error from FB: {photo['error']}")
+
+            if 'id' not in photo.keys():
+                raise Exception(f'The response from IG was not the expected one: {photo}')
+
         media_fbid = photo['id']
         Logger.info(f'Uploaded photo to Facebook - id: {media_fbid}')
     except Exception as e:
-        Logger.error(f'Could not upload photo to Facebook')
-        Logger.error(e)
-        raise e
+        raise ValueError('Could not upload photo to Facebook') from e
 
     try:
         post_data = {
             'message': content,
             'attached_media': str([{'media_fbid': media_fbid}]),
         }
-        FacebookGraph.put_object(parent_object=PAGE_ID, connection_name='feed', **post_data)
+        response = FacebookGraph.put_object(parent_object=PAGE_ID, connection_name='feed', **post_data)
+        if 'error' not in response.keys():
+            raise Exception(f"Therer is an error from FB: {response['error']}")
     except Exception as e:
-        Logger.error(f'Could not publish post to Facebook')
-        raise e
+        raise ValueError('Could not publish post to Facebook') from e
 
     send_chat_subs_message('✉️ Posted on Facebook ✅')
 
@@ -407,53 +424,52 @@ def post_on_ig(image_url, content):
         img_id = result['id']
         Logger.info(f'Uploaded image with link {link}')
     except Exception as e:
-        Logger.error('Could not upload image to Imgur')
-        Logger.error(e)
-        raise e
+        raise ValueError(f'Could not upload image to Imgur') from e
 
     try:
-        payload = {
-            'image_url': link,
-            'caption': content,
-            'access_token': CONFIG['IG_TOKEN'],
-        }
-        response = requests.post(f'https://graph.instagram.com/me/media', data=payload)
-        response = response.json()
-        Logger.info(f'Created IG creation...')
-    except Exception as e:
-        Logger.error('Could not upload media to Instagram')
-        Logger.error(e)
+        try:
+            payload = {
+                'image_url': link,
+                'caption': content,
+                'access_token': CONFIG['IG_TOKEN'],
+            }
+            response = requests.post(f'https://graph.instagram.com/me/media', data=payload)
+            response = response.json()
 
-        Logger.info(f'Deleting imgur image: {img_id}')
-        Imgur.delete_image(img_id)
+            if 'error' not in response.keys():
+                raise Exception(f"Therer is an error from IG: {response['error']}")
 
-        raise e
+            if 'id' not in response.keys():
+                raise Exception(f'The response from IG was not the expected one: {response}')
 
-    try:
-        creation_id = response['id']
-        Logger.info(f'Uploading creation id {creation_id}')
-        payload = {
-            'image_url': link,
-            'creation_id': creation_id,
-            'access_token': CONFIG['IG_TOKEN']
-        }
-        response = requests.post(f'https://graph.instagram.com/me/media_publish', data=payload)
-        response = response.json()
-    except Exception as e:
-        Logger.error('Could not publish media to Instagram')
-        Logger.error(e)
+            Logger.info(f'Created IG creation...: {response}')
+        except Exception as e:
+            raise ValueError(f'Could not upload media to Instagram') from e
 
-        Logger.info(f'Deleting imgur image: {img_id}')
-        Imgur.delete_image(img_id)
+        try:
+            creation_id = response['id']
+            Logger.info(f'Uploading creation id {creation_id}')
+            payload = {
+                'image_url': link,
+                'creation_id': creation_id,
+                'access_token': CONFIG['IG_TOKEN']
+            }
+            response = requests.post(f'https://graph.instagram.com/me/media_publish', data=payload)
+            response = response.json()
+            if 'error' not in response.keys():
+                raise Exception(f"Therer is an error from IG: {response['error']}")
 
-        raise e
+        except Exception as e:
+            raise ValueError(f'Could not publish media to Instagram.') from e
 
-    try:
-        Logger.info(f'Deleting imgur image: {img_id}')
-        Imgur.delete_image(img_id)
-    except Exception as e:
-        Logger.error('Could not delete imgur id')
-        Logger.error(e)
+    except:
+        try:
+            if img_id is not None:
+                Logger.info(f'Deleting imgur image: {img_id}')
+                Imgur.delete_image(img_id)
+        except _:
+            pass
+
         raise e
 
     send_chat_subs_message('✉️ Posted on Instagram ✅')
@@ -474,6 +490,15 @@ def get_photo_caption_and_text():
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    # If the chatter does not exist or is not verified, simply ignore; Still log their chat_id in the DB
+    # but leave them unverified
+    chat_id = update.effective_chat.id
+    if not is_chatter_verified_in_db(chat_id):
+        if not does_chatter_exists_in_db(chat_id):
+            name = update.message.chat.first_name + '_' + update.message.chat.last_name
+            new_chatter_in_db(chat_id, name, False)
+        return
 
     await update.message.reply_text("🖼️ Image received. Processing started...")
 
@@ -565,6 +590,9 @@ def run_telegram():
     TelegramApp.run_polling()
 
 
+last_posting_event_time = 0
+try_posting_interval_time = 60 * 60  # in seconds
+
 def post_pending():
     Logger.info('Polling..')
 
@@ -574,6 +602,14 @@ def post_pending():
         return
 
     Logger.info(f"Pending posts: {len(posts)}")
+
+    # Run the post logic only so often
+    now = time.time()
+    global last_posting_event_time
+    if now - last_posting_event_time < try_posting_interval_time:
+        Logger.info(f"Rate limit: Skipping the special work this time")
+        return
+    last_posting_event_time = now
 
     for post in posts:
         text = post['text']
@@ -586,8 +622,8 @@ def post_pending():
                 Logger.info(f'Marking as posted on fb:{post_id}')
                 mark_as_fb_posted(post_id)
             except Exception as e:
-                Logger.error('Could not update fb post in DB')
-                # send_chat_subs_message(f'⛔ Problem! Could not update Facebook post in DB; Error: {e}')
+                Logger.error(f'Could not update fb post in DB: {e}')
+                send_chat_subs_message(f'⛔ Problem! Could not update Facebook post in DB; Error: {e}')
 
         if not post['posted_on_ig']:
             try:
@@ -595,9 +631,8 @@ def post_pending():
                 Logger.info(f'Marking as posted on ig: {post_id}')
                 mark_as_ig_posted(post_id)
             except Exception as e:
-                Logger.error('Could not update ig post in DB')
-                Logger.error(e)
-                # send_chat_subs_message(f'⛔ Problem! Could not update Instagram post in DB; Error: {e}')
+                Logger.error(f'Could not update ig post in DB: {e}')
+                send_chat_subs_message(f'⛔ Problem! Could not update Instagram post in DB; Error: {e}')
 
 def check_post_queue():
     Logger.info('Checking queue...')
@@ -758,6 +793,7 @@ def main():
     if CATOZER_DEBUG:
         poll_interval_seconds = 1
     logging.getLogger('apscheduler').setLevel(logging.ERROR)
+
     scheduler = BackgroundScheduler()
     scheduler.add_job(post_pending, 'interval', seconds=poll_interval_seconds)
     scheduler.add_job(check_post_queue, 'interval', hours=4)
