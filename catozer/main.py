@@ -1,4 +1,5 @@
 import os
+import traceback
 import json
 import sys
 import logging
@@ -371,7 +372,7 @@ def generate_post_content(caption):
     response = GeminiClient.models.generate_content(
         model="gemini-2.0-flash",
         config=types.GenerateContentConfig(
-            system_instruction="Това ще е в пост в инстаграм. Страницата за която става въпрос е Cattos. В нея публикувам снимки и историики за премеждията на котарака Марципан. Ще трябва да ми помогнеш с правенеот на съдаржание за тази страница. Аз ще ти давам описание на картинката, ти ще ми даваш забавен пост за Марципан,  който ще е за facebook и instagram. Марципан е раг-дол котка, а не сиамка, имай го предвид. Давай ми само текста на поста. Прави постовете малко по-къси - 2-3 изречения и вкарвай кратка измислена историйка от живота на Марципан, която да е подходяща за описанието на снимкат. Отговряй на Български език и не прави правописни грешки."),
+            system_instruction="Това ще е в пост в инстаграм. Страницата за която става въпрос е Cattos. В нея публикувам снимки и историики за премеждията на котарака Марципан. Ще трябва да ми помогнеш с правенеот на съдаржание за тази страница. Аз ще ти давам описание на картинката, ти ще ми даваш забавен пост за Марципан,  който ще е за facebook и instagram. Марципан е раг-дол котка, а не сиамка, имай го предвид. Давай ми само текста на поста. Прави постовете малко по-къси - 2-3 изречения и вкарвай кратка измислена историйка от живота на Марципан, която да е подходяща за описанието на снимкат. Отговряй на Български език и не прави правописни грешки. Съдържанието трябва да е от името на Марципан."),
         contents=[caption]
     )
 
@@ -381,6 +382,7 @@ def generate_post_content(caption):
 def post_on_fb(image_url, content):
 
     FacebookGraph = facebook.GraphAPI(access_token=CONFIG['FACEBOOK_TOKEN'], version="3.1")
+
     try:
         with open(image_url, 'rb') as image:
             photo = FacebookGraph.put_photo(
@@ -389,11 +391,11 @@ def post_on_fb(image_url, content):
                 published = False,
             )
 
-            if 'error' not in photo.keys():
-                raise Exception(f"Therer is an error from FB: {photo['error']}")
+        if 'error' in photo.keys():
+            raise Exception(f"There is an error from FB: {photo['error']}")
 
-            if 'id' not in photo.keys():
-                raise Exception(f'The response from IG was not the expected one: {photo}')
+        if 'id' not in photo.keys():
+            raise Exception(f'The response from IG was not the expected one: {photo}')
 
         media_fbid = photo['id']
         Logger.info(f'Uploaded photo to Facebook - id: {media_fbid}')
@@ -406,8 +408,8 @@ def post_on_fb(image_url, content):
             'attached_media': str([{'media_fbid': media_fbid}]),
         }
         response = FacebookGraph.put_object(parent_object=PAGE_ID, connection_name='feed', **post_data)
-        if 'error' not in response.keys():
-            raise Exception(f"Therer is an error from FB: {response['error']}")
+        if 'error' in response.keys():
+            raise Exception(f"There is an error from FB: {response['error']}")
     except Exception as e:
         raise ValueError('Could not publish post to Facebook') from e
 
@@ -423,6 +425,7 @@ def post_on_ig(image_url, content):
         link = result['link']
         img_id = result['id']
         Logger.info(f'Uploaded image with link {link}')
+
     except Exception as e:
         raise ValueError(f'Could not upload image to Imgur') from e
 
@@ -436,11 +439,13 @@ def post_on_ig(image_url, content):
             response = requests.post(f'https://graph.instagram.com/me/media', data=payload)
             response = response.json()
 
-            if 'error' not in response.keys():
-                raise Exception(f"Therer is an error from IG: {response['error']}")
+            if 'error' in response.keys():
+                error = response['error']
+                Logger.error(error)
+                raise ValueError(f"There is an error from IG: {error}")
 
             if 'id' not in response.keys():
-                raise Exception(f'The response from IG was not the expected one: {response}')
+                raise ValueError(f'The response from IG was not the expected one: {response}')
 
             Logger.info(f'Created IG creation...: {response}')
         except Exception as e:
@@ -456,8 +461,8 @@ def post_on_ig(image_url, content):
             }
             response = requests.post(f'https://graph.instagram.com/me/media_publish', data=payload)
             response = response.json()
-            if 'error' not in response.keys():
-                raise Exception(f"Therer is an error from IG: {response['error']}")
+            if 'error' in response.keys():
+                raise Exception(f"There is an error from IG: {response['error']}")
 
         except Exception as e:
             raise ValueError(f'Could not publish media to Instagram.') from e
@@ -477,7 +482,7 @@ def post_on_ig(image_url, content):
 def send_chat_subs_message(msg):
 
     async def send_chat_message(msg):
-        print(f'Sending bot message: {msg}')
+        Logger.info(f'Sending bot message: {msg}')
         TelegramApp = ApplicationBuilder().token(CONFIG['TELEGRAM_BOT_TOKEN']).build()
         subs = get_chat_subscribes()
         for sub in subs:
@@ -593,7 +598,7 @@ def run_telegram():
 last_posting_event_time = 0
 try_posting_interval_time = 60 * 60  # in seconds
 
-def post_pending():
+def post_pending(send_tg_message = True):
     Logger.info('Polling..')
 
     posts = get_not_posted_but_scheduled()
@@ -604,7 +609,7 @@ def post_pending():
     Logger.info(f"Pending posts: {len(posts)}")
 
     # Run the post logic only so often
-    now = time.time()
+    now = datetime.now().timestamp()
     global last_posting_event_time
     if now - last_posting_event_time < try_posting_interval_time:
         Logger.info(f"Rate limit: Skipping the special work this time")
@@ -622,8 +627,9 @@ def post_pending():
                 Logger.info(f'Marking as posted on fb:{post_id}')
                 mark_as_fb_posted(post_id)
             except Exception as e:
-                Logger.error(f'Could not update fb post in DB: {e}')
-                send_chat_subs_message(f'⛔ Problem! Could not update Facebook post in DB; Error: {e}')
+                Logger.error(f'Could not update fb post in DB: {e}', exc_info=True)
+                if send_tg_message:
+                    send_chat_subs_message(f'⛔ Problem! Could not update Facebook post in DB; Error: {e}')
 
         if not post['posted_on_ig']:
             try:
@@ -631,8 +637,10 @@ def post_pending():
                 Logger.info(f'Marking as posted on ig: {post_id}')
                 mark_as_ig_posted(post_id)
             except Exception as e:
-                Logger.error(f'Could not update ig post in DB: {e}')
-                send_chat_subs_message(f'⛔ Problem! Could not update Instagram post in DB; Error: {e}')
+                Logger.error(f'Could not update ig post in DB: {e}', exc_info=True)
+                traceback.print_exc()
+                if send_tg_message:
+                    send_chat_subs_message(f'⛔ Problem! Could not update Instagram post in DB; Error: {e}')
 
 def check_post_queue():
     Logger.info('Checking queue...')
