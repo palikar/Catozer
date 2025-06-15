@@ -467,7 +467,7 @@ def post_on_ig(image_url, content):
         except Exception as e:
             raise ValueError(f'Could not publish media to Instagram.') from e
 
-    except:
+    except Exception as e:
         try:
             if img_id is not None:
                 Logger.info(f'Deleting imgur image: {img_id}')
