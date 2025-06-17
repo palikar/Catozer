@@ -3,12 +3,13 @@ import traceback
 import json
 import sys
 import logging
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, timezone
 import threading
 import urllib.parse
 from pathlib import Path
 import asyncio
 import requests
+import time as unix_time
 
 from PIL import Image
 
@@ -380,18 +381,17 @@ def generate_post_content(caption):
     return text
 
 def post_on_fb(image_url, content):
-
     FacebookGraph = facebook.GraphAPI(access_token=CONFIG['FACEBOOK_TOKEN'], version="3.1")
-    scheduled_time = int(time.time()) + 1 * 60
 
     try:
         with open(image_url, 'rb') as image:
             photo = FacebookGraph.put_photo(
                 image = image,
                 album_path = 'me/photos',
-                published = True,
+                published = False,
             )
 
+        Logger.info(f'Facebook response: {photo}')
         if 'error' in photo.keys():
             raise Exception(f"There is an error from FB: {photo['error']}")
 
@@ -404,16 +404,18 @@ def post_on_fb(image_url, content):
         raise ValueError('Could not upload photo to Facebook') from e
 
     try:
-        post_data = {
-            'parent_object': PAGE_ID,
-            'connection_name': 'feed',
-            'message': content,
-            'attached_media': str([{'media_fbid': media_fbid}]),
-            'published': False,
-            'scheduled_publish_time': scheduled_time
-        }
-        response = FacebookGraph.put_object(**post_data)
 
+        scheduled_time = datetime.now(timezone.utc)
+        scheduled_time += timedelta(minutes=10)
+        scheduled_time = scheduled_time.astimezone()
+        post_data = {
+            'message': content,
+            'published': False,  # Required to make it a scheduled post
+            'scheduled_publish_time': scheduled_time.isoformat(),
+            'attached_media': str([{'media_fbid': media_fbid}]),
+        }
+        response = FacebookGraph.put_object(parent_object=PAGE_ID, connection_name='feed', **post_data)
+        Logger.info(f'Facebook response: {response}')
         if 'error' in response.keys():
             raise Exception(f"There is an error from FB: {response['error']}")
     except Exception as e:
@@ -486,7 +488,6 @@ def post_on_ig(image_url, content):
     send_chat_subs_message('✉️ Posted on Instagram ✅')
 
 def send_chat_subs_message(msg):
-
     async def send_chat_message(msg):
         Logger.info(f'Sending bot message: {msg}')
         TelegramApp = ApplicationBuilder().token(CONFIG['TELEGRAM_BOT_TOKEN']).build()
