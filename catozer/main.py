@@ -382,13 +382,14 @@ def generate_post_content(caption):
 def post_on_fb(image_url, content):
 
     FacebookGraph = facebook.GraphAPI(access_token=CONFIG['FACEBOOK_TOKEN'], version="3.1")
+    scheduled_time = int(time.time()) + 1 * 60
 
     try:
         with open(image_url, 'rb') as image:
             photo = FacebookGraph.put_photo(
                 image = image,
                 album_path = 'me/photos',
-                published = False,
+                published = True,
             )
 
         if 'error' in photo.keys():
@@ -404,10 +405,15 @@ def post_on_fb(image_url, content):
 
     try:
         post_data = {
+            'parent_object': PAGE_ID,
+            'connection_name': 'feed',
             'message': content,
             'attached_media': str([{'media_fbid': media_fbid}]),
+            'published': False,
+            'scheduled_publish_time': scheduled_time
         }
-        response = FacebookGraph.put_object(parent_object=PAGE_ID, connection_name='feed', **post_data)
+        response = FacebookGraph.put_object(**post_data)
+
         if 'error' in response.keys():
             raise Exception(f"There is an error from FB: {response['error']}")
     except Exception as e:
@@ -795,6 +801,21 @@ def images(filename):
     return send_from_directory(ServerApp.root_path + '/../downloads/', filename)
 
 def main():
+
+    noScheduler = False
+    noTelegram = False
+
+    for arg in sys.argv[1:]:
+        if arg == "post_pending":
+            post_pending()
+            return
+
+        if arg == "-no-scheduler":
+            noScheduler = True
+
+        if arg == "-no-telegram":
+            noTelegram = True
+
     threading.Thread(target=run_server, daemon=True).start()
 
     poll_interval_seconds = 30
@@ -802,10 +823,11 @@ def main():
         poll_interval_seconds = 1
     logging.getLogger('apscheduler').setLevel(logging.ERROR)
 
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(post_pending, 'interval', seconds=poll_interval_seconds)
-    scheduler.add_job(check_post_queue, 'interval', hours=4)
-    scheduler.add_job(health_update, 'interval', hours=12)
-    scheduler.start()
+    if not noScheduler:
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(post_pending, 'interval', seconds=poll_interval_seconds)
+        scheduler.add_job(check_post_queue, 'interval', hours=4)
+        scheduler.add_job(health_update, 'interval', hours=12)
+        scheduler.start()
 
     run_telegram()
