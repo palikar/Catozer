@@ -630,8 +630,8 @@ def post_pending(send_tg_message = True):
 
         if not post['posted_on_fb']:
             try:
-                # post_on_fb(image_url, text)
                 Logger.info(f'Marking as posted on fb:{post_id}')
+                # post_on_fb(image_url, text)
                 mark_as_fb_posted(post_id)
             except Exception as e:
                 Logger.error(f'Could not update fb post in DB: {e}', exc_info=True)
